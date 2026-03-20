@@ -12,40 +12,33 @@ import {
   RegisteredGroup,
 } from '../types.js';
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY || readEnvFile(['GROQ_API_KEY']).GROQ_API_KEY || '';
+const TRANSCRIPTION_URL = process.env.TRANSCRIPTION_URL || 'http://localhost:8765';
 
 /**
- * Transcribe a voice message buffer using Groq's Whisper API.
- * Returns the transcript text, or null if unavailable.
+ * Transcribe a voice message buffer by posting it to the local transcription service.
+ * Returns the transcript text, or null if the service is unavailable.
  */
 async function transcribeVoice(fileBuffer: Buffer, filename: string): Promise<string | null> {
-  if (!GROQ_API_KEY) {
-    logger.warn('GROQ_API_KEY not set — voice transcription disabled');
-    return null;
-  }
   try {
     const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
-    const modelPart = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3-turbo\r\n`
-    );
-    const fileHeader = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: audio/ogg\r\n\r\n`
-    );
+    const parts = [
+      `--${boundary}\r\n`,
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`,
+      `Content-Type: audio/ogg\r\n\r\n`,
+    ];
+    const header = Buffer.from(parts.join(''));
     const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([modelPart, fileHeader, fileBuffer, footer]);
+    const body = Buffer.concat([header, fileBuffer, footer]);
 
-    const resp = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    const resp = await fetch(`${TRANSCRIPTION_URL}/api/transcribe-sync`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${GROQ_API_KEY}`,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      },
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
       body,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!resp.ok) {
-      logger.warn({ status: resp.status }, 'Groq transcription returned error');
+      logger.warn({ status: resp.status }, 'Transcription service returned error');
       return null;
     }
 
@@ -323,6 +316,20 @@ export class TelegramChannel implements Channel {
           console.log(
             `  Send /chatid to the bot to get a chat's registration ID\n`,
           );
+
+          // Check transcription service health (non-blocking)
+          try {
+            const healthResp = await fetch(`${TRANSCRIPTION_URL}/health`, {
+              signal: AbortSignal.timeout(3000),
+            });
+            if (healthResp.ok) {
+              logger.info('Transcription service is reachable');
+            } else {
+              logger.warn('Transcription service returned non-OK status');
+            }
+          } catch {
+            logger.warn('Transcription service is not reachable — voice messages will use fallback');
+          }
 
           resolve();
         },
