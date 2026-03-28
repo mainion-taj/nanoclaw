@@ -10,6 +10,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'ONECLI_URL',
   'TZ',
+  'NATIVE_MODE',
 ]);
 
 export const ASSISTANT_NAME =
@@ -95,3 +96,7 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+// Native mode: run Claude CLI directly instead of in Docker containers
+export const NATIVE_MODE =
+  (process.env.NATIVE_MODE || envConfig.NATIVE_MODE) === 'true';

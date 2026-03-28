@@ -15,6 +15,7 @@ import {
   IDLE_TIMEOUT,
   ONECLI_URL,
   TIMEZONE,
+  NATIVE_MODE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -281,6 +282,18 @@ export async function runContainerAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
+
+  // --- Native mode: skip Docker, run Claude CLI directly ---
+  if (NATIVE_MODE) {
+    const { runNativeAgent } = await import('./native-runner.js');
+    return runNativeAgent(group, input, onProcess, onOutput);
+  }
+
+  // --- Native mode: skip Docker, run Claude CLI directly ---
+  if (NATIVE_MODE) {
+    const { runNativeAgent } = await import('./native-runner.js');
+    return runNativeAgent(group, input, onProcess, onOutput);
+  }
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
