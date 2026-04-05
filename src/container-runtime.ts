@@ -39,7 +39,7 @@ export function stopContainer(name: string): void {
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
   if (NATIVE_MODE) {
-    logger.info("Native mode — skipping container runtime check");
+    logger.info('Native mode — skipping container runtime check');
     return;
   }
   try {

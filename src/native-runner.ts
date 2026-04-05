@@ -74,6 +74,12 @@ function readSecrets(): Record<string, string> {
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
+    // Agent mailbox MCP config
+    'MAILBOX_SERVER_URL',
+    'MAILBOX_AGENT_ID',
+    'MAILBOX_AGENT_NAME',
+    'MAILBOX_CLI_PATH',
+    'MAILBOX_AUTH_TOKEN',
   ]);
 }
 

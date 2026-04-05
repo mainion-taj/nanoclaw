@@ -11,6 +11,8 @@ const envConfig = readEnvFile([
   'ONECLI_URL',
   'TZ',
   'NATIVE_MODE',
+  'MAILBOX_SERVER_URL',
+  'MAILBOX_AGENT_ID',
 ]);
 
 export const ASSISTANT_NAME =
@@ -100,3 +102,9 @@ export const TIMEZONE = resolveConfigTimezone();
 // Native mode: run Claude CLI directly instead of in Docker containers
 export const NATIVE_MODE =
   (process.env.NATIVE_MODE || envConfig.NATIVE_MODE) === 'true';
+
+// Agent Mailbox: inter-agent messaging server
+export const MAILBOX_SERVER_URL =
+  process.env.MAILBOX_SERVER_URL || envConfig.MAILBOX_SERVER_URL || '';
+export const MAILBOX_AGENT_ID =
+  process.env.MAILBOX_AGENT_ID || envConfig.MAILBOX_AGENT_ID || '';
