@@ -2,7 +2,7 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { DATA_DIR, DRIFT_DELAY_MS, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -33,6 +33,8 @@ export class GroupQueue {
   private waitingGroups: string[] = [];
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
+  private driftFn: ((groupJid: string) => Promise<void>) | null = null;
+  private driftTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private shuttingDown = false;
 
   private getGroup(groupJid: string): GroupState {
@@ -59,8 +61,60 @@ export class GroupQueue {
     this.processMessagesFn = fn;
   }
 
+  setDriftFn(fn: (groupJid: string) => Promise<void>): void {
+    this.driftFn = fn;
+  }
+
+  private clearDriftTimer(groupJid: string): void {
+    const existing = this.driftTimers.get(groupJid);
+    if (existing) {
+      clearTimeout(existing);
+      this.driftTimers.delete(groupJid);
+    }
+  }
+
+  private scheduleDrift(groupJid: string): void {
+    if (!this.driftFn || DRIFT_DELAY_MS <= 0) return;
+    this.clearDriftTimer(groupJid);
+    const timer = setTimeout(() => {
+      this.driftTimers.delete(groupJid);
+      if (this.shuttingDown) return;
+      const state = this.getGroup(groupJid);
+      if (state.active) return; // a real task started, skip drift
+      logger.info({ groupJid }, 'Drift activating');
+      this.runDrift(groupJid).catch((err) =>
+        logger.error({ groupJid, err }, 'Unhandled error in runDrift'),
+      );
+    }, DRIFT_DELAY_MS);
+    this.driftTimers.set(groupJid, timer);
+  }
+
+  private async runDrift(groupJid: string): Promise<void> {
+    if (!this.driftFn) return;
+    const state = this.getGroup(groupJid);
+    if (state.active || this.shuttingDown) return;
+    state.active = true;
+    state.idleWaiting = false;
+    state.isTaskContainer = false;
+    this.activeCount++;
+    logger.debug({ groupJid, activeCount: this.activeCount }, 'Starting drift session');
+    try {
+      await this.driftFn(groupJid);
+    } catch (err) {
+      logger.error({ groupJid, err }, 'Error during drift');
+    } finally {
+      state.active = false;
+      state.process = null;
+      state.containerName = null;
+      state.groupFolder = null;
+      this.activeCount--;
+      this.drainGroup(groupJid);
+    }
+  }
+
   enqueueMessageCheck(groupJid: string): void {
     if (this.shuttingDown) return;
+    this.clearDriftTimer(groupJid);
 
     const state = this.getGroup(groupJid);
 
@@ -89,6 +143,7 @@ export class GroupQueue {
 
   enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>): void {
     if (this.shuttingDown) return;
+    this.clearDriftTimer(groupJid);
 
     const state = this.getGroup(groupJid);
 
@@ -228,6 +283,10 @@ export class GroupQueue {
       state.groupFolder = null;
       this.activeCount--;
       this.drainGroup(groupJid);
+      // Schedule drift: fires if no new messages arrive within DRIFT_DELAY_MS
+      if (!state.pendingMessages && state.pendingTasks.length === 0) {
+        this.scheduleDrift(groupJid);
+      }
     }
   }
 
@@ -346,6 +405,8 @@ export class GroupQueue {
 
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
+    for (const timer of this.driftTimers.values()) clearTimeout(timer);
+    this.driftTimers.clear();
 
     // Count active containers but don't kill them — they'll finish on their own
     // via idle timeout or container timeout. The --rm flag cleans them up on exit.

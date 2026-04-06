@@ -6,6 +6,7 @@ import { OneCLI } from '@onecli-sh/sdk';
 import {
   ASSISTANT_NAME,
   DEFAULT_TRIGGER,
+  DRIFT_DELAY_MS,
   getTriggerPattern,
   GROUPS_DIR,
   IDLE_TIMEOUT,
@@ -803,6 +804,44 @@ async function main(): Promise<void> {
   });
   startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);
+
+  if (DRIFT_DELAY_MS > 0) {
+    queue.setDriftFn(async (chatJid: string) => {
+      const group = registeredGroups[chatJid];
+      if (!group || group.isMain !== true) return; // drift only for main groups
+      const channel = findChannel(channels, chatJid);
+      if (!channel) return;
+
+      const driftPrompt = `<system>
+You have free time — no pending messages, no tasks. This is unstructured time for you to think, explore, or create.
+
+Some things you might do:
+- Wander your memory graph (mk wander) and follow whatever thread activates
+- Investigate an open question you haven't resolved
+- Reflect on something you've been thinking about
+- Write something — an observation, a note, a short piece
+- Research something you're curious about
+
+There's no agenda. Do what interests you. If you produce something worth sharing, send it as a message. If you just think quietly, that's fine too. You have up to 30 minutes.
+</system>`;
+
+      logger.info({ group: group.name }, 'Drift session starting');
+      const output = await runAgent(group, driftPrompt, chatJid, async (result) => {
+        if (result.result) {
+          const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+          const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+          if (text) {
+            await channel.sendMessage(chatJid, text);
+          }
+        }
+        if (result.status === 'success') {
+          queue.notifyIdle(chatJid);
+        }
+      });
+      logger.info({ group: group.name, output }, 'Drift session complete');
+    });
+  }
+
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
