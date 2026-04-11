@@ -14,17 +14,10 @@ import {
   type ExecutionEventBus,
   type AgentExecutor,
 } from '@a2a-js/sdk/server';
-import {
-  A2AExpressApp,
-  UserBuilder,
-} from '@a2a-js/sdk/server/express';
-import type { AgentCard, TaskStatusUpdateEvent } from '@a2a-js/sdk';
+import { A2AExpressApp, UserBuilder } from '@a2a-js/sdk/server/express';
+import type { AgentCard, TaskStatusUpdateEvent, Task } from '@a2a-js/sdk';
 
-import {
-  A2A_PORT,
-  A2A_AUTH_TOKEN,
-  ASSISTANT_NAME,
-} from './config.js';
+import { A2A_PORT, A2A_AUTH_TOKEN, ASSISTANT_NAME } from './config.js';
 import { logger } from './logger.js';
 
 // Callback type for injecting A2A messages into NanoClaw's message loop
@@ -116,66 +109,85 @@ class NanoClawExecutor implements AgentExecutor {
     context: RequestContext,
     eventBus: ExecutionEventBus,
   ): Promise<void> => {
-    const userText = context.userMessage.parts
-      ?.filter((p: { kind: string }) => p.kind === 'text')
-      .map((p: { kind: string; text?: string }) => (p as { text: string }).text)
-      .join('\n') || '';
-
     const taskId = context.taskId;
 
+    // Log raw message shape for debugging A2A delivery issues
+    const rawParts = context.userMessage?.parts;
     logger.info(
-      { taskId, contextId: context.contextId, textLength: userText.length },
-      'A2A task received',
-    );
-
-    if (!messageInjector) {
-      // Publish failed status
-      eventBus.publish({
-        kind: 'status-update',
+      {
         taskId,
         contextId: context.contextId,
+        partsCount: rawParts?.length ?? 0,
+        partsKinds: rawParts?.map((p: { kind: string }) => p.kind),
+        rawMessage: JSON.stringify(context.userMessage).slice(0, 500),
+      },
+      'A2A task received — raw message',
+    );
+
+    const userText =
+      (rawParts || [])
+        .filter((p: { kind: string }) => p.kind === 'text')
+        .map(
+          (p: { kind: string; text?: string }) => (p as { text: string }).text,
+        )
+        .filter(Boolean)
+        .join('\n') || '';
+
+    logger.info(
+      { taskId, textLength: userText.length, textPreview: userText.slice(0, 200) },
+      'A2A task text extracted',
+    );
+
+    // Helper: publish a Task event (the SDK ResultManager needs kind:'task' to
+    // initialise currentTask; bare status-update events get lost when no task
+    // exists in the InMemoryTaskStore yet).
+    const publishTask = (state: string, text: string, final: boolean) => {
+      const task: Task & { kind: 'task' } = {
+        kind: 'task',
+        id: taskId,
+        contextId: context.contextId,
         status: {
-          state: 'failed',
+          state: state as Task['status']['state'],
           timestamp: new Date().toISOString(),
           message: {
             role: 'agent',
             kind: 'message',
             messageId: crypto.randomUUID(),
-            parts: [{ kind: 'text', text: 'A2A server not connected to NanoClaw message loop' }],
+            parts: [{ kind: 'text', text }],
           },
         },
-        final: true,
-      } as TaskStatusUpdateEvent);
+        history: [],
+      };
+      eventBus.publish(task);
+    };
+
+    if (!userText) {
+      logger.warn(
+        { taskId, rawParts: JSON.stringify(rawParts) },
+        'A2A task has empty text — rejecting',
+      );
+      publishTask('failed', 'A2A task contained no text content. Raw parts logged on receiver.', true);
       eventBus.finished();
       return;
     }
 
-    // Publish working status
-    eventBus.publish({
-      kind: 'status-update',
-      taskId,
-      contextId: context.contextId,
-      status: {
-        state: 'working',
-        timestamp: new Date().toISOString(),
-      },
-      final: false,
-    } as TaskStatusUpdateEvent);
+    if (!messageInjector) {
+      publishTask('failed', 'A2A server not connected to NanoClaw message loop', true);
+      eventBus.finished();
+      return;
+    }
 
     // Inject into NanoClaw's message loop
     messageInjector(userText, taskId);
-
-    // Fire-and-forget: return "working" immediately.
-    // The message is injected and NanoClaw will process it in its normal loop.
-    // Callers can poll tasks/get for eventual completion if needed.
     logger.info({ taskId }, 'A2A task injected into message loop');
 
     // Register pending result tracker (agent session will call resolveA2ATask)
     pendingResults.set(taskId, {
       resolve: (result: string) => {
-        logger.info({ taskId, resultLength: result.length }, 'A2A task completed');
-        // Could publish artifact/completed here if we had eventBus reference,
-        // but for now the task store tracks status via the initial "working" event.
+        logger.info(
+          { taskId, resultLength: result.length },
+          'A2A task completed',
+        );
       },
       reject: (err: Error) => {
         logger.warn({ taskId, error: err.message }, 'A2A task failed');
@@ -183,28 +195,15 @@ class NanoClawExecutor implements AgentExecutor {
     });
 
     // Auto-cleanup after 30 minutes
-    setTimeout(() => {
-      pendingResults.delete(taskId);
-    }, 30 * 60 * 1000);
-
-    // Publish completed immediately with acknowledgment
-    eventBus.publish({
-      kind: 'status-update',
-      taskId,
-      contextId: context.contextId,
-      status: {
-        state: 'completed',
-        timestamp: new Date().toISOString(),
-        message: {
-          role: 'agent',
-          kind: 'message',
-          messageId: crypto.randomUUID(),
-          parts: [{ kind: 'text', text: `Message received and queued for processing (task: ${taskId})` }],
-        },
+    setTimeout(
+      () => {
+        pendingResults.delete(taskId);
       },
-      final: true,
-    } as TaskStatusUpdateEvent);
+      30 * 60 * 1000,
+    );
 
+    // Publish completed task with acknowledgment
+    publishTask('completed', `Message received and queued for processing (task: ${taskId})`, true);
     eventBus.finished();
   };
 
@@ -218,16 +217,17 @@ class NanoClawExecutor implements AgentExecutor {
       pending.reject(new Error('Task cancelled'));
       pendingResults.delete(taskId);
     }
-    eventBus.publish({
-      kind: 'status-update',
-      taskId,
+    const task: Task & { kind: 'task' } = {
+      kind: 'task',
+      id: taskId,
       contextId: '',
       status: {
         state: 'canceled',
         timestamp: new Date().toISOString(),
       },
-      final: true,
-    } as TaskStatusUpdateEvent);
+      history: [],
+    };
+    eventBus.publish(task);
     eventBus.finished();
   };
 }
@@ -280,7 +280,10 @@ export function startA2AServer(): express.Express | null {
   );
 
   // Setup A2A routes
-  const a2aApp = new A2AExpressApp(requestHandler, UserBuilder.noAuthentication);
+  const a2aApp = new A2AExpressApp(
+    requestHandler,
+    UserBuilder.noAuthentication,
+  );
   a2aApp.setupRoutes(app, '');
 
   app.listen(A2A_PORT, '0.0.0.0', () => {

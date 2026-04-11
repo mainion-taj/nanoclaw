@@ -62,7 +62,10 @@ export const MAX_MESSAGES_PER_PROMPT = Math.max(
 );
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
-export const DRIFT_DELAY_MS = parseInt(process.env.DRIFT_DELAY_MS || '600000', 10); // 10min default — idle time before drift activates
+export const DRIFT_DELAY_MS = parseInt(
+  process.env.DRIFT_DELAY_MS || '600000',
+  10,
+); // 10min default — idle time before drift activates
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
@@ -109,12 +112,9 @@ export const A2A_PORT = parseInt(
   process.env.A2A_PORT || envConfig.A2A_PORT || '4100',
   10,
 );
-export const A2A_PEERS = (
-  process.env.A2A_PEERS || envConfig.A2A_PEERS || ''
-)
+export const A2A_PEERS = (process.env.A2A_PEERS || envConfig.A2A_PEERS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 export const A2A_AUTH_TOKEN =
   process.env.A2A_AUTH_TOKEN || envConfig.A2A_AUTH_TOKEN || '';
-
