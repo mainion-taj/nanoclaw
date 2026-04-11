@@ -2,7 +2,11 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, DRIFT_DELAY_MS, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import {
+  DATA_DIR,
+  DRIFT_DELAY_MS,
+  MAX_CONCURRENT_CONTAINERS,
+} from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -97,7 +101,10 @@ export class GroupQueue {
     state.idleWaiting = false;
     state.isTaskContainer = false;
     this.activeCount++;
-    logger.debug({ groupJid, activeCount: this.activeCount }, 'Starting drift session');
+    logger.debug(
+      { groupJid, activeCount: this.activeCount },
+      'Starting drift session',
+    );
     try {
       await this.driftFn(groupJid);
     } catch (err) {

@@ -20,6 +20,9 @@ import { execFile } from 'child_process';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -428,23 +431,18 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-            NANOCLAW_WORKSPACE_IPC: WORKSPACE_IPC,
-            NANOCLAW_WORKSPACE_GROUP: WORKSPACE_GROUP,
-            NANOCLAW_WORKSPACE_GLOBAL: WORKSPACE_GLOBAL,
-            NANOCLAW_WORKSPACE_EXTRA: WORKSPACE_EXTRA,
           },
         },
-        ...(process.env.MAILBOX_SERVER_URL && process.env.MAILBOX_AGENT_ID ? {
+        // A2A MCP server — agent-to-agent communication via A2A protocol
+        ...(process.env.A2A_PEERS ? {
           agent_mailbox: {
             command: 'node',
-            args: [
-              process.env.MAILBOX_CLI_PATH || 'agent-mailbox',
-              'connect',
-              '--server', process.env.MAILBOX_SERVER_URL,
-              '--agent-id', process.env.MAILBOX_AGENT_ID,
-              '--agent-name', process.env.MAILBOX_AGENT_NAME || containerInput.assistantName || 'agent',
-              ...(process.env.MAILBOX_AUTH_TOKEN ? ['--auth-token', process.env.MAILBOX_AUTH_TOKEN] : []),
-            ],
+            args: [path.join(__dirname, 'a2a-mcp-stdio.js')],
+            env: {
+              A2A_PEERS: process.env.A2A_PEERS,
+              A2A_AUTH_TOKEN: process.env.A2A_AUTH_TOKEN || '',
+              A2A_AGENT_NAME: containerInput.assistantName || 'agent',
+            },
           },
         } : {}),
       },
@@ -558,7 +556,6 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;

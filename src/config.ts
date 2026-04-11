@@ -11,8 +11,9 @@ const envConfig = readEnvFile([
   'ONECLI_URL',
   'TZ',
   'NATIVE_MODE',
-  'MAILBOX_SERVER_URL',
-  'MAILBOX_AGENT_ID',
+  'A2A_PORT',
+  'A2A_PEERS',
+  'A2A_AUTH_TOKEN',
 ]);
 
 export const ASSISTANT_NAME =
@@ -103,8 +104,17 @@ export const TIMEZONE = resolveConfigTimezone();
 export const NATIVE_MODE =
   (process.env.NATIVE_MODE || envConfig.NATIVE_MODE) === 'true';
 
-// Agent Mailbox: inter-agent messaging server
-export const MAILBOX_SERVER_URL =
-  process.env.MAILBOX_SERVER_URL || envConfig.MAILBOX_SERVER_URL || '';
-export const MAILBOX_AGENT_ID =
-  process.env.MAILBOX_AGENT_ID || envConfig.MAILBOX_AGENT_ID || '';
+// A2A (Agent-to-Agent protocol) server
+export const A2A_PORT = parseInt(
+  process.env.A2A_PORT || envConfig.A2A_PORT || '4100',
+  10,
+);
+export const A2A_PEERS = (
+  process.env.A2A_PEERS || envConfig.A2A_PEERS || ''
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+export const A2A_AUTH_TOKEN =
+  process.env.A2A_AUTH_TOKEN || envConfig.A2A_AUTH_TOKEN || '';
+

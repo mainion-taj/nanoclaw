@@ -14,9 +14,9 @@ import {
   ONECLI_URL,
   POLL_INTERVAL,
   TIMEZONE,
-  MAILBOX_AGENT_ID,
-  MAILBOX_SERVER_URL,
+  A2A_PORT,
 } from './config.js';
+import { startA2AServer, setA2AMessageInjector } from './a2a-server.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -315,7 +315,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
-  clearMailboxPending();
+  // Mailbox removed — A2A handles inter-agent messaging
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -443,51 +443,6 @@ async function runAgent(
 }
 
 // --- Mailbox poll (instant delivery of inter-agent messages) ---
-let lastMailboxCheck = 0;
-const MAILBOX_POLL_INTERVAL = 10_000;
-let mailboxNotificationPending = false;
-
-async function checkMailbox(): Promise<void> {
-  if (!MAILBOX_SERVER_URL || !MAILBOX_AGENT_ID) return;
-  const now = Date.now();
-  if (now - lastMailboxCheck < MAILBOX_POLL_INTERVAL) return;
-  lastMailboxCheck = now;
-  if (mailboxNotificationPending) return;
-  try {
-    const res = await fetch(
-      `${MAILBOX_SERVER_URL}/unread/${encodeURIComponent(MAILBOX_AGENT_ID)}`,
-    );
-    if (!res.ok) return;
-    const data = (await res.json()) as { unread: number };
-    if (data.unread === 0) return;
-
-    // Inject synthetic message into main group to trigger agent session
-    const mainEntry = Object.entries(registeredGroups).find(
-      ([, g]) => g.isMain,
-    );
-    if (!mainEntry) return;
-    const [mainJid] = mainEntry;
-    const syntheticId = `mailbox-${Date.now()}`;
-    storeMessage({
-      id: syntheticId,
-      chat_jid: mainJid,
-      sender: 'mailbox',
-      sender_name: 'Agent Mailbox',
-      content: `[MAILBOX] You have ${data.unread} unread message(s) from other agents. Use your check_inbox tool to read and respond.`,
-      timestamp: new Date().toISOString(),
-      is_from_me: false,
-      is_bot_message: false,
-    });
-    mailboxNotificationPending = true;
-    logger.info({ unread: data.unread }, 'Mailbox notification injected');
-  } catch {
-    // Silently ignore — mailbox poll is best-effort
-  }
-}
-
-function clearMailboxPending(): void {
-  mailboxNotificationPending = false;
-}
 
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
@@ -588,9 +543,6 @@ async function startMessageLoop(): Promise<void> {
     } catch (err) {
       logger.error({ err }, 'Error in message loop');
     }
-
-    // Check mailbox for inter-agent messages
-    await checkMailbox();
 
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
@@ -847,6 +799,29 @@ There's no agenda. Do what interests you. If you produce something worth sharing
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);
   });
+
+  // Start A2A server if configured
+  if (A2A_PORT) {
+    setA2AMessageInjector((text: string, taskId: string) => {
+      // Inject A2A task as synthetic message into the main group
+      const mainEntry = Object.entries(registeredGroups).find(
+        ([, g]) => g.isMain,
+      );
+      if (!mainEntry) return;
+      const [mainJid] = mainEntry;
+      storeMessage({
+        id: `a2a-${taskId}`,
+        chat_jid: mainJid,
+        sender: 'a2a',
+        sender_name: 'A2A Peer Agent',
+        content: `[A2A Task ${taskId}] ${text}`,
+        timestamp: new Date().toISOString(),
+        is_from_me: false,
+        is_bot_message: false,
+      });
+    });
+    startA2AServer();
+  }
 }
 
 // Guard: only run when executed directly, not when imported by tests
