@@ -16,7 +16,12 @@ import {
   TIMEZONE,
   A2A_PORT,
 } from './config.js';
-import { startA2AServer, setA2AMessageInjector } from './a2a-server.js';
+import {
+  startA2AServer,
+  setA2AMessageInjector,
+  resolveA2ATask,
+  rejectA2ATask,
+} from './a2a-server.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -266,6 +271,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages, TIMEZONE);
 
+  // Extract A2A task IDs from this batch so we can route replies back to peers
+  const a2aTaskIds = missedMessages
+    .filter((m) => m.id.startsWith('a2a-'))
+    .map((m) => m.id.slice(4)); // strip 'a2a-' prefix
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -309,6 +319,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
+        // Route reply back to any A2A peers whose tasks triggered this session
+        for (const taskId of a2aTaskIds) {
+          resolveA2ATask(taskId, text).catch((err) =>
+            logger.warn({ taskId, err }, 'Failed to route A2A reply to peer'),
+          );
+        }
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();

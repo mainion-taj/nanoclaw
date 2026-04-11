@@ -17,7 +17,7 @@ import {
 import { A2AExpressApp, UserBuilder } from '@a2a-js/sdk/server/express';
 import type { AgentCard, TaskStatusUpdateEvent, Task } from '@a2a-js/sdk';
 
-import { A2A_PORT, A2A_AUTH_TOKEN, ASSISTANT_NAME } from './config.js';
+import { A2A_PORT, A2A_AUTH_TOKEN, A2A_PEERS, ASSISTANT_NAME } from './config.js';
 import { logger } from './logger.js';
 
 // Callback type for injecting A2A messages into NanoClaw's message loop
@@ -32,6 +32,34 @@ const pendingResults = new Map<
   { resolve: (result: string) => void; reject: (err: Error) => void }
 >();
 
+// Peer name → URL cache (populated lazily from agent cards)
+const peerCardCache = new Map<string, string>();
+
+// Task ID → originating peer URL (for reply routing)
+const taskPeerUrl = new Map<string, string>();
+
+/**
+ * Discover the URL of a peer agent by fetching its agent card.
+ * Results are cached so repeated lookups are cheap.
+ */
+async function discoverPeerUrl(senderName: string): Promise<string | undefined> {
+  const key = senderName.toLowerCase();
+  if (peerCardCache.has(key)) return peerCardCache.get(key);
+  for (const peerUrl of A2A_PEERS) {
+    try {
+      const resp = await fetch(`${peerUrl}/.well-known/agent.json`);
+      if (!resp.ok) continue;
+      const card = (await resp.json()) as { name?: string };
+      if (card.name && card.name.toLowerCase() === key) {
+        peerCardCache.set(key, peerUrl);
+        logger.debug({ senderName, peerUrl }, 'A2A peer URL discovered and cached');
+        return peerUrl;
+      }
+    } catch { /* skip unreachable peers */ }
+  }
+  return undefined;
+}
+
 /**
  * Register the message injector function.
  * Called from index.ts during startup to wire A2A into the message loop.
@@ -43,12 +71,46 @@ export function setA2AMessageInjector(fn: MessageInjector): void {
 /**
  * Resolve a pending task with the agent's result.
  * Called from index.ts when an agent session completes for an A2A task.
+ * Also POSTs the result back to the originating peer if a URL is known.
  */
-export function resolveA2ATask(taskId: string, result: string): void {
+export async function resolveA2ATask(taskId: string, result: string): Promise<void> {
   const pending = pendingResults.get(taskId);
   if (pending) {
     pending.resolve(result);
     pendingResults.delete(taskId);
+  }
+
+  const peerUrl = taskPeerUrl.get(taskId);
+  taskPeerUrl.delete(taskId);
+
+  if (peerUrl) {
+    try {
+      const msgId = `${ASSISTANT_NAME}-reply-${taskId.slice(0, 8)}-${Date.now()}`;
+      const body = JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'message/send',
+        params: {
+          message: {
+            messageId: msgId,
+            role: 'user',
+            parts: [{ kind: 'text', text: result }],
+            metadata: { from: ASSISTANT_NAME, replyTo: taskId },
+          },
+        },
+        id: 1,
+      });
+      await fetch(peerUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(A2A_AUTH_TOKEN ? { Authorization: `Bearer ${A2A_AUTH_TOKEN}` } : {}),
+        },
+        body,
+      });
+      logger.info({ taskId, peerUrl }, 'A2A reply sent back to originating peer');
+    } catch (err) {
+      logger.warn({ taskId, peerUrl, err }, 'Failed to send A2A reply to peer');
+    }
   }
 }
 
@@ -61,6 +123,7 @@ export function rejectA2ATask(taskId: string, error: Error): void {
     pending.reject(error);
     pendingResults.delete(taskId);
   }
+  taskPeerUrl.delete(taskId);
 }
 
 /**
@@ -134,9 +197,28 @@ class NanoClawExecutor implements AgentExecutor {
         .join('\n') || '';
 
     logger.info(
-      { taskId, textLength: userText.length, textPreview: userText.slice(0, 200) },
+      {
+        taskId,
+        textLength: userText.length,
+        textPreview: userText.slice(0, 200),
+      },
       'A2A task text extracted',
     );
+
+    // Discover originating peer URL for reply routing (fire-and-forget)
+    const senderName = (
+      context.userMessage?.metadata as Record<string, string>
+    )?.from;
+    if (senderName) {
+      discoverPeerUrl(senderName)
+        .then((url) => {
+          if (url) {
+            taskPeerUrl.set(taskId, url);
+            logger.debug({ taskId, senderName, url }, 'Reply URL stored for A2A task');
+          }
+        })
+        .catch(() => {});
+    }
 
     // Helper: publish a Task event (the SDK ResultManager needs kind:'task' to
     // initialise currentTask; bare status-update events get lost when no task
@@ -166,13 +248,21 @@ class NanoClawExecutor implements AgentExecutor {
         { taskId, rawParts: JSON.stringify(rawParts) },
         'A2A task has empty text — rejecting',
       );
-      publishTask('failed', 'A2A task contained no text content. Raw parts logged on receiver.', true);
+      publishTask(
+        'failed',
+        'A2A task contained no text content. Raw parts logged on receiver.',
+        true,
+      );
       eventBus.finished();
       return;
     }
 
     if (!messageInjector) {
-      publishTask('failed', 'A2A server not connected to NanoClaw message loop', true);
+      publishTask(
+        'failed',
+        'A2A server not connected to NanoClaw message loop',
+        true,
+      );
       eventBus.finished();
       return;
     }
@@ -203,7 +293,11 @@ class NanoClawExecutor implements AgentExecutor {
     );
 
     // Publish completed task with acknowledgment
-    publishTask('completed', `Message received and queued for processing (task: ${taskId})`, true);
+    publishTask(
+      'completed',
+      `Message received and queued for processing (task: ${taskId})`,
+      true,
+    );
     eventBus.finished();
   };
 
