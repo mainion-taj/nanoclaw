@@ -78,6 +78,16 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
+// Wake signal: resolving this Promise short-circuits the main loop sleep.
+// Used by A2A injection to wake the loop immediately on incoming messages.
+let wakeLoopResolve: (() => void) | null = null;
+function wakeMessageLoop(): void {
+  if (wakeLoopResolve) {
+    wakeLoopResolve();
+    wakeLoopResolve = null;
+  }
+}
+
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -544,7 +554,13 @@ async function startMessageLoop(): Promise<void> {
       logger.error({ err }, 'Error in message loop');
     }
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+    await Promise.race([
+      new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL)),
+      new Promise<void>((resolve) => {
+        wakeLoopResolve = resolve;
+      }),
+    ]);
+    wakeLoopResolve = null;
   }
 }
 
@@ -778,18 +794,28 @@ There's no agenda. Do what interests you. If you produce something worth sharing
 </system>`;
 
       logger.info({ group: group.name }, 'Drift session starting');
-      const output = await runAgent(group, driftPrompt, chatJid, async (result) => {
-        if (result.result) {
-          const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
-          const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-          if (text) {
-            await channel.sendMessage(chatJid, text);
+      const output = await runAgent(
+        group,
+        driftPrompt,
+        chatJid,
+        async (result) => {
+          if (result.result) {
+            const raw =
+              typeof result.result === 'string'
+                ? result.result
+                : JSON.stringify(result.result);
+            const text = raw
+              .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+              .trim();
+            if (text) {
+              await channel.sendMessage(chatJid, text);
+            }
           }
-        }
-        if (result.status === 'success') {
-          queue.notifyIdle(chatJid);
-        }
-      });
+          if (result.status === 'success') {
+            queue.notifyIdle(chatJid);
+          }
+        },
+      );
       logger.info({ group: group.name, output }, 'Drift session complete');
     });
   }
@@ -819,6 +845,9 @@ There's no agenda. Do what interests you. If you produce something worth sharing
         is_from_me: false,
         is_bot_message: false,
       });
+      // Wake the message loop immediately so the A2A task is processed
+      // without waiting for the next POLL_INTERVAL tick.
+      wakeMessageLoop();
     });
     startA2AServer();
   }
