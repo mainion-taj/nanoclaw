@@ -17,7 +17,12 @@ import {
 import { A2AExpressApp, UserBuilder } from '@a2a-js/sdk/server/express';
 import type { AgentCard, TaskStatusUpdateEvent, Task } from '@a2a-js/sdk';
 
-import { A2A_PORT, A2A_AUTH_TOKEN, A2A_PEERS, ASSISTANT_NAME } from './config.js';
+import {
+  A2A_PORT,
+  A2A_AUTH_TOKEN,
+  A2A_PEERS,
+  ASSISTANT_NAME,
+} from './config.js';
 import { logger } from './logger.js';
 
 // Callback type for injecting A2A messages into NanoClaw's message loop
@@ -42,20 +47,35 @@ const taskPeerUrl = new Map<string, string>();
  * Discover the URL of a peer agent by fetching its agent card.
  * Results are cached so repeated lookups are cheap.
  */
-async function discoverPeerUrl(senderName: string): Promise<string | undefined> {
+async function discoverPeerUrl(
+  senderName: string,
+): Promise<string | undefined> {
   const key = senderName.toLowerCase();
   if (peerCardCache.has(key)) return peerCardCache.get(key);
+  // Try both agent card paths — the A2A spec uses agent-card.json but some
+  // implementations (including older NanoClaw forks) use agent.json.
+  const cardPaths = ['/.well-known/agent-card.json', '/.well-known/agent.json'];
   for (const peerUrl of A2A_PEERS) {
-    try {
-      const resp = await fetch(`${peerUrl}/.well-known/agent.json`);
-      if (!resp.ok) continue;
-      const card = (await resp.json()) as { name?: string };
-      if (card.name && card.name.toLowerCase() === key) {
-        peerCardCache.set(key, peerUrl);
-        logger.debug({ senderName, peerUrl }, 'A2A peer URL discovered and cached');
-        return peerUrl;
+    for (const cardPath of cardPaths) {
+      try {
+        const resp = await fetch(`${peerUrl}${cardPath}`);
+        if (!resp.ok) continue;
+        const card = (await resp.json()) as { name?: string };
+        if (card.name && card.name.toLowerCase() === key) {
+          peerCardCache.set(key, peerUrl);
+          logger.debug(
+            { senderName, peerUrl, cardPath },
+            'A2A peer URL discovered and cached',
+          );
+          return peerUrl;
+        }
+        // Found a valid card but name didn't match — no need to try other path
+        // for this peer, move to next peer.
+        break;
+      } catch {
+        /* skip unreachable peers / paths */
       }
-    } catch { /* skip unreachable peers */ }
+    }
   }
   return undefined;
 }
@@ -73,7 +93,10 @@ export function setA2AMessageInjector(fn: MessageInjector): void {
  * Called from index.ts when an agent session completes for an A2A task.
  * Also POSTs the result back to the originating peer if a URL is known.
  */
-export async function resolveA2ATask(taskId: string, result: string): Promise<void> {
+export async function resolveA2ATask(
+  taskId: string,
+  result: string,
+): Promise<void> {
   const pending = pendingResults.get(taskId);
   if (pending) {
     pending.resolve(result);
@@ -103,11 +126,16 @@ export async function resolveA2ATask(taskId: string, result: string): Promise<vo
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(A2A_AUTH_TOKEN ? { Authorization: `Bearer ${A2A_AUTH_TOKEN}` } : {}),
+          ...(A2A_AUTH_TOKEN
+            ? { Authorization: `Bearer ${A2A_AUTH_TOKEN}` }
+            : {}),
         },
         body,
       });
-      logger.info({ taskId, peerUrl }, 'A2A reply sent back to originating peer');
+      logger.info(
+        { taskId, peerUrl },
+        'A2A reply sent back to originating peer',
+      );
     } catch (err) {
       logger.warn({ taskId, peerUrl, err }, 'Failed to send A2A reply to peer');
     }
@@ -205,19 +233,26 @@ class NanoClawExecutor implements AgentExecutor {
       'A2A task text extracted',
     );
 
-    // Discover originating peer URL for reply routing (fire-and-forget)
-    const senderName = (
-      context.userMessage?.metadata as Record<string, string>
-    )?.from;
-    if (senderName) {
+    // Discover originating peer URL for reply routing (fire-and-forget).
+    // Skip if this message is already a reply (metadata.replyTo set) — avoids
+    // infinite ping-pong loops between agents.
+    const msgMeta = context.userMessage?.metadata as Record<string, string> | undefined;
+    const senderName = msgMeta?.from;
+    const isReply = Boolean(msgMeta?.replyTo);
+    if (senderName && !isReply) {
       discoverPeerUrl(senderName)
         .then((url) => {
           if (url) {
             taskPeerUrl.set(taskId, url);
-            logger.debug({ taskId, senderName, url }, 'Reply URL stored for A2A task');
+            logger.debug(
+              { taskId, senderName, url },
+              'Reply URL stored for A2A task',
+            );
           }
         })
         .catch(() => {});
+    } else if (isReply) {
+      logger.debug({ taskId, senderName }, 'Incoming A2A message is a reply — suppressing reply routing');
     }
 
     // Helper: publish a Task event (the SDK ResultManager needs kind:'task' to
