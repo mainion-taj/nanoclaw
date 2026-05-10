@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash setup.sh)",
+      "Bash(curl:*)",
+      "Bash(npx tsx:*)",
+      "Bash(sudo usermod:*)",
+      "Bash(sg docker:*)",
+      "Bash(sudo setfacl:*)",
+      "Bash(sudo apt-get:*)",
+      "Bash(sudo mkdir:*)",
+      "Bash(sudo systemctl:*)",
+      "Bash(git remote:*)",
+      "Bash(git fetch:*)",
+      "Bash(git config:*)",
+      "Bash(git add:*)",
+      "Bash(npm install:*)",
+      "Bash(npx vitest:*)",
+      "Bash(systemctl:*)",
+      "Bash(node:*)",
+      "Bash(git:*)",
+      "Bash(sqlite3:*)",
+      "Bash(docker:*)",
+      "Bash(mkdir:*)",
+      "Bash(export:*)",
+      "Bash(mkdir -p /home/taj/repos/memory/kernel)",
+      "Read(//home/taj/repos/memory/kernel/**)",
+      "Bash(npx mk:*)",
+      "Bash(cd:*)",
+      "Bash(gh auth:*)",
+      "Bash(rm:*)",
+      "Bash(CLAUDE_MD=\"/home/taj/nanoclaw/groups/telegram_main/CLAUDE.md\")",
+      "Read(//home/taj/nanoclaw/**)"
+    ]
+  }
+}

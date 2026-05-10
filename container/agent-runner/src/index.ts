@@ -398,10 +398,36 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // ── Model / effort / thinking configuration from env ──────────────
+  // Per-agent tuning via .env; per-task override via task env config.
+  //   CLAUDE_MODEL    — 'sonnet', 'opus', 'haiku', or full model ID
+  //   CLAUDE_EFFORT   — 'low' | 'medium' | 'high' | 'max'
+  //   CLAUDE_THINKING — 'adaptive' | 'disabled' | number (fixed budget)
+  const claudeModel = process.env.CLAUDE_MODEL || undefined;
+  const claudeEffort = process.env.CLAUDE_EFFORT as 'low' | 'medium' | 'high' | 'max' | undefined;
+
+  let claudeThinking: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' } | undefined;
+  if (process.env.CLAUDE_THINKING) {
+    const val = process.env.CLAUDE_THINKING;
+    if (val === 'adaptive') claudeThinking = { type: 'adaptive' };
+    else if (val === 'disabled') claudeThinking = { type: 'disabled' };
+    else {
+      const budget = parseInt(val, 10);
+      if (!isNaN(budget) && budget > 0) claudeThinking = { type: 'enabled', budgetTokens: budget };
+    }
+  }
+
+  if (claudeModel || claudeEffort || claudeThinking) {
+    log(`Model config: model=${claudeModel ?? 'default'}, effort=${claudeEffort ?? 'default'}, thinking=${process.env.CLAUDE_THINKING ?? 'default'}`);
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
       cwd: WORKSPACE_GROUP,
+      ...(claudeModel ? { model: claudeModel } : {}),
+      ...(claudeEffort ? { effort: claudeEffort } : {}),
+      ...(claudeThinking ? { thinking: claudeThinking } : {}),
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,

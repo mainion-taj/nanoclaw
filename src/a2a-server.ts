@@ -236,7 +236,9 @@ class NanoClawExecutor implements AgentExecutor {
     // Discover originating peer URL for reply routing (fire-and-forget).
     // Skip if this message is already a reply (metadata.replyTo set) — avoids
     // infinite ping-pong loops between agents.
-    const msgMeta = context.userMessage?.metadata as Record<string, string> | undefined;
+    const msgMeta = context.userMessage?.metadata as
+      | Record<string, string>
+      | undefined;
     const senderName = msgMeta?.from;
     const isReply = Boolean(msgMeta?.replyTo);
     if (senderName && !isReply) {
@@ -252,7 +254,10 @@ class NanoClawExecutor implements AgentExecutor {
         })
         .catch(() => {});
     } else if (isReply) {
-      logger.debug({ taskId, senderName }, 'Incoming A2A message is a reply — suppressing reply routing');
+      logger.debug(
+        { taskId, senderName },
+        'Incoming A2A message is a reply — suppressing reply routing',
+      );
     }
 
     // Helper: publish a Task event (the SDK ResultManager needs kind:'task' to
